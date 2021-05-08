@@ -39,14 +39,22 @@ def create_loaders(dataset_name, n_workers, batch_size, seed=42):
 
 def load_data(dataset_name):
 
-    if dataset_name == 'mnist':
+    if dataset_name == "fake":
 
         transform = transforms.ToTensor()
 
-        train_data = datasets.MNIST(root='data', train=True,
+        train_data = datasets.FakeData(size=200, transform=transform)
+
+        test_data = datasets.FakeData(size=200, transform=transform)
+
+    elif dataset_name == 'mnist':
+
+        transform = transforms.ToTensor()
+
+        train_data = datasets.MNIST(root='dataset/', train=True,
                                     download=True, transform=transform)
 
-        test_data = datasets.MNIST(root='data', train=False,
+        test_data = datasets.MNIST(root='dataset/', train=False,
                                    download=True, transform=transform)
     elif dataset_name == 'cifar10':
 

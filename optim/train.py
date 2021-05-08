@@ -5,8 +5,7 @@ from .utils import create_run, update_run, save_run, seed_everything
 from .prep_data import create_loaders
 from .gen_sgd import SGDGen
 
-RUNS = 5
-
+RUNS = 2
 
 def train_workers(suffix, model, optimizer, criterion, epochs, train_loader_workers,
                   val_loader, test_loader, n_workers, hpo=False):
@@ -84,7 +83,8 @@ def tune_step_size(exp):
     hpo = True
 
     for lr in exp['lrs']:
-        print('Learning rate {:2.4f}:'.format(lr))
+        with open("log.txt", 'a') as f:
+            print('Learning rate {:2.4f}:'.format(lr), file=f)
         val_loss = run_workers(lr, exp, hpo=hpo)
 
         if val_loss < best_val_loss:
@@ -94,24 +94,35 @@ def tune_step_size(exp):
 
 
 def run_workers(lr, exp, suffix=None, hpo=False):
+    """
+    Run the training over all the workers.
+    """
     dataset_name = exp['dataset_name']
     n_workers = exp['n_workers']
     batch_size = exp['batch_size']
     epochs = exp['epochs']
     criterion = exp['criterion']
-    error_feedback = exp['error_feedback']
     momentum = exp['momentum']
     weight_decay = exp['weight_decay']
     compression = get_compression(**exp['compression'])
-    master_compression = exp['master_compression']
+    master_compression = get_compression(**exp['master_compression'])
+    up_error_feedback = exp['error_feedback']
+    down_error_feedback = exp['down_error_feedback']
+    use_up_memory = exp['use_up_memory']
+    up_compression_model = exp['up_compression']
+    down_compression_model = exp['down_compression']
 
     net = exp['net']
     model = net()
 
     train_loader_workers, val_loader, test_loader = create_loaders(dataset_name, n_workers, batch_size)
 
-    optimizer = SGDGen(model.parameters(), lr=lr, n_workers=n_workers, error_feedback=error_feedback,
-                       comp=compression, momentum=momentum, weight_decay=weight_decay, master_comp=master_compression)
+    optimizer = SGDGen(model.parameters(), step_size=lr, n_workers=n_workers,
+                       comp=compression, momentum=momentum, weight_decay=weight_decay, master_comp=master_compression,
+                       up_error_feedback=up_error_feedback, down_error_feedback=down_error_feedback,
+                       use_up_memory=use_up_memory, up_compression_model=up_compression_model,
+                       down_compression_model=down_compression_model
+                       )
 
     val_loss = train_workers(suffix, model, optimizer, criterion, epochs, train_loader_workers,
                              val_loader, test_loader, n_workers, hpo=hpo)

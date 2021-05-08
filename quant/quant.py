@@ -39,12 +39,12 @@ def random_dithering_opt(x, p, s, natural):
     if norm == 0:
         return x.reshape(dim)
 
-    if natural:
-        s = int(2 ** (s - 1))
+    # if natural:
+    #     s = int(2 ** (s - 1))
     f = torch.floor(s * torch.abs(x) / norm + torch.rand_like(x))/s
 
-    if natural:
-        f = c_nat(f)
+    # if natural:
+    #     f = c_nat(f)
     res = torch.sign(x) * f
     k = res * norm
     return k.reshape(dim)
