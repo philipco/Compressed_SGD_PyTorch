@@ -1,30 +1,37 @@
 import torch
 import numpy as np
+from tqdm import tqdm
 
 from .utils import create_run, update_run, save_run, seed_everything
 from .prep_data import create_loaders
 from .gen_sgd import SGDGen
 
-RUNS = 5
+RUNS = 1
 
+COUNT_THRESHOLD = 5
 
 def train_workers(suffix, model, optimizer, criterion, epochs, train_loader_workers,
-                  val_loader, test_loader, n_workers, hpo=False):
+                  val_loader, test_loader, n_workers, hpo=False, log_every=1, threshold=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     run = create_run()
     train_loss = np.inf
 
     best_val_loss = np.inf
+    best_train_count = np.inf
     test_loss = np.inf
     test_acc = 0
-
+    count_less_than_threshold = 0
     for e in range(epochs):
         model.train()
         running_loss = 0
         train_loader_iter = [iter(train_loader_workers[w]) for w in range(n_workers)]
         iter_steps = len(train_loader_workers[0])
-        for _ in range(iter_steps):
+        if (e + 1) % log_every == 0:
+            gen = tqdm(range(iter_steps))
+        else:
+            gen = range(iter_steps)
+        for _ in gen:
             for w_id in range(n_workers):
                 data, labels = next(train_loader_iter[w_id])
                 data, labels = data.to(device), labels.to(device)
@@ -37,22 +44,39 @@ def train_workers(suffix, model, optimizer, criterion, epochs, train_loader_work
 
         train_loss = running_loss/(iter_steps*n_workers)
 
-        val_loss, _ = accuracy_and_loss(model, val_loader, criterion, device)
+        if len(val_loader) > 0:
+            val_loss, _ = accuracy_and_loss(model, val_loader, criterion, device)
 
-        if val_loss < best_val_loss:
-            test_loss, test_acc = accuracy_and_loss(model, test_loader, criterion, device)
-            best_val_loss = val_loss
+            if val_loss < best_val_loss:
+                test_loss, test_acc = accuracy_and_loss(model, test_loader, criterion, device)
+                best_val_loss = val_loss
+        elif threshold is not None and best_train_count == np.inf:
+            val_loss = 0
+            test_loss = 0
+            test_acc = 0
+            if train_loss < threshold:
+                count_less_than_threshold += 1
+            else:
+                count_less_than_threshold = 0
+            if count_less_than_threshold == COUNT_THRESHOLD:
+                best_train_count = e + 1
+                break
 
-        update_run(train_loss, test_loss, test_acc, run)
 
-        print("Epoch: {}/{}.. Training Loss: {:.5f}, Test Loss: {:.5f}, Test accuracy: {:.2f} "
-              .format(e + 1, epochs, train_loss, test_loss, test_acc), end='\r')
+        update_run(train_loss, test_loss, test_acc, run, optimizer.overall_information, optimizer.error_ratio)
+
+        if (e + 1) % log_every == 0:
+            print("\nEpoch: {}/{}.. Training Loss: {:.5f}, Test Loss: {:.5f}, Test accuracy: {:.2f} "
+                .format(e + 1, epochs, train_loss, test_loss, test_acc), end='\r')
 
     print('')
     if not hpo:
         save_run(suffix, run)
 
-    return best_val_loss
+    if best_val_loss == np.inf:
+        return best_train_count
+    else:
+        return best_val_loss
 
 
 def accuracy_and_loss(model, loader, criterion, device):
@@ -92,6 +116,33 @@ def tune_step_size(exp):
             best_val_loss = val_loss
     return best_lr
 
+def tune_step_size_plus(exp, num=15):
+    best_val_loss = np.inf
+    best_lr = 0
+    best_pos = 0
+
+    seed = exp['seed']
+    seed_everything(seed)
+    hpo = True
+
+    for i, lr in enumerate(exp['lrs']):
+        print('Learning rate {:2.4f}:'.format(lr))
+        val_loss = run_workers(lr, exp, hpo=hpo)
+
+        if val_loss < best_val_loss:
+            best_lr = lr
+            best_val_loss = val_loss
+            best_pos = i
+    lrs_linear = np.linspace(exp['lrs'][max(0, best_pos - 1)], exp['lrs'][min(len(exp['lrs']) - 1, best_pos + 1)], num=num)
+    for i, lr in enumerate(lrs_linear):
+        print('Learning rate {:2.4f}:'.format(lr))
+        val_loss = run_workers(lr, exp, hpo=hpo)
+
+        if val_loss < best_val_loss:
+            best_lr = lr
+            best_val_loss = val_loss
+    return best_lr
+
 
 def run_workers(lr, exp, suffix=None, hpo=False):
     dataset_name = exp['dataset_name']
@@ -104,17 +155,24 @@ def run_workers(lr, exp, suffix=None, hpo=False):
     weight_decay = exp['weight_decay']
     compression = get_compression(**exp['compression'])
     master_compression = exp['master_compression']
+    log_every = exp['log_every']
+    threshold = exp['threshold']
+    ef_21 = exp['ef_21']
 
     net = exp['net']
     model = net()
 
-    train_loader_workers, val_loader, test_loader = create_loaders(dataset_name, n_workers, batch_size)
+    train_loader_workers, val_loader, test_loader = create_loaders(dataset_name, n_workers, batch_size, 
+                                                                   seed=exp['seed'], val_ratio=exp['val_ratio'], 
+                                                                   common_ratio=exp['common_ratio'])
 
     optimizer = SGDGen(model.parameters(), lr=lr, n_workers=n_workers, error_feedback=error_feedback,
-                       comp=compression, momentum=momentum, weight_decay=weight_decay, master_comp=master_compression)
+                       comp=compression, momentum=momentum, weight_decay=weight_decay, master_comp=master_compression, 
+                       ef_21=ef_21)
 
     val_loss = train_workers(suffix, model, optimizer, criterion, epochs, train_loader_workers,
-                             val_loader, test_loader, n_workers, hpo=hpo)
+                             val_loader, test_loader, n_workers, hpo=hpo, log_every=log_every, 
+                             threshold=threshold)
     return val_loss
 
 

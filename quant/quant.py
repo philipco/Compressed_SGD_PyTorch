@@ -56,7 +56,7 @@ def random_dithering_wrap(p=np.inf, s=2, natural=True):
     return random_dithering
 
 
-def rand_spars_opt(x, h):
+def rand_spars_opt(x, h, w_id):
     """
     :param x: vector to sparsify
     :param h: density
@@ -75,12 +75,12 @@ def rand_spars_opt(x, h):
 
 
 def rand_spars_wrap(h=0.1):
-    def rand_spars(x):
-        return rand_spars_opt(x, h=h)
+    def rand_spars(x, w_id):
+        return rand_spars_opt(x, h=h, w_id=w_id)
     return rand_spars
 
 
-def top_k_opt(x, h):
+def top_k_opt(x, h, w_id):
     """
     :param x: vector to sparsify
     :param h: density
@@ -99,9 +99,16 @@ def top_k_opt(x, h):
 
 
 def top_k_wrap(h=0.1):
-    def top_k(x):
-        return top_k_opt(x, h=h)
+    def top_k(x, w_id):
+        return top_k_opt(x, h=h, w_id=w_id)
     return top_k
+
+class TopK:
+    def __init__(self, h=0.1):
+        self.h = h
+
+    def __call__(self, x, w_id):
+        return top_k_opt(x, h=self.h, w_id=w_id)
 
 
 def grad_spars_opt(x, h, max_it):
@@ -160,3 +167,59 @@ def combine_two_wrap(comp_1, comp_2):
         t_2 = comp_2(t_1)
         return t_2
     return combine
+
+class PermK_TopK_unbiased:
+    def __init__(self, nodes_count: int, h: float) -> None:
+        self.h = h
+        self.nodes_count = nodes_count
+        self.permutation = {}
+        self.count = {i: 0 for i in range(nodes_count)}
+        
+    def __call__(self, grad, node_index: int):
+        x, dim, d = prep_grad(grad)
+        if node_index == 0:
+            self.permutation[self.count[0]] = torch.randperm(d)        
+        index_start = (d / self.nodes_count) * node_index
+        index_end = (d / self.nodes_count) * (node_index + 1)
+        indices = self.permutation[self.count[node_index]][int(index_start): int(index_end)]
+        indices = indices.clone().detach()
+        mask = torch.zeros_like(x)
+        mask[indices] = 1
+        return_grad = mask * x * self.nodes_count
+        return_grad = return_grad.reshape(dim)
+        t = top_k_opt(return_grad, self.h, 0)
+        if node_index == self.nodes_count - 1:
+            del self.permutation[self.count[node_index]]
+        self.count[node_index] += 1
+        return t
+
+    def k(self) -> float:
+        return self.grad_size / self.nodes_count
+    
+class PermK_TopK_biased:
+    def __init__(self, nodes_count: int, h: float) -> None:
+        self.h = h
+        self.nodes_count = nodes_count
+        self.permutation = {}
+        self.count = {i: 0 for i in range(nodes_count)}
+        
+    def __call__(self, grad, node_index: int):
+        x, dim, d = prep_grad(grad)
+        if node_index == 0:
+            self.permutation[self.count[0]] = torch.randperm(d)        
+        index_start = (d / self.nodes_count) * node_index
+        index_end = (d / self.nodes_count) * (node_index + 1)
+        indices = self.permutation[self.count[node_index]][int(index_start): int(index_end)]
+        indices = indices.clone().detach()
+        mask = torch.zeros_like(x)
+        mask[indices] = 1
+        return_grad = mask * x # * self.nodes_count
+        return_grad = return_grad.reshape(dim)
+        t = top_k_opt(return_grad, self.h, 0)
+        if node_index == self.nodes_count - 1:
+            del self.permutation[self.count[node_index]]
+        self.count[node_index] += 1
+        return t
+
+    def k(self) -> float:
+        return self.grad_size / self.nodes_count
